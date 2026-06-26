@@ -1,30 +1,29 @@
 Component: handleRequest()
+Responsibility
 
-Responsibility (Current Hypothesis)
+Acts as the main request dispatcher.
 
-Acts as the main dispatcher for incoming HTTP requests.
-
-Inputs
-
-Incoming HTTP request
-Response status
-Response headers
-Remix rendering context
-
-Likely Outputs
-
-A rendered HTTP response
-
+Responsibilities Verified So Far
+Reads information from the incoming request.
+Parses the URL.
+Applies route-specific security headers.
+Determines the user's preferred language.
+Detects the user's operating system.
+Determines whether the client is a bot or a browser.
+Dispatches the request to the appropriate handler.
 Mental Model
 
-Think of handleRequest() as an airport traffic controller.
+Imagine an airport security checkpoint.
 
-Every incoming plane (request) contacts the control tower first.
+Every passenger passes through the same entrance.
 
-The tower doesn't fly the plane.
+The checkpoint asks:
 
-It decides where it should go next.
+Which flight?
+Passport?
+Special handling?
+Domestic or international?
 
-Some requests go to the browser handler.
+Then it sends the passenger to the correct gate.
 
-Some requests go to the bot handler.
+handleRequest() does the same thing for HTTP requests.
