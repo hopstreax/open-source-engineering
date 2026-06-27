@@ -1,29 +1,44 @@
-Component: handleRequest()
+Component
+
+entry.server.tsx
+
 Responsibility
 
-Acts as the main request dispatcher.
+Acts as the entry point for every server-side HTTP request in the Remix application.
 
-Responsibilities Verified So Far
-Reads information from the incoming request.
-Parses the URL.
-Applies route-specific security headers.
-Determines the user's preferred language.
-Detects the user's operating system.
-Determines whether the client is a bot or a browser.
-Dispatches the request to the appropriate handler.
+Who Calls It?
+The Remix/Node.js server when an HTTP request arrives.
+Who Does It Call?
+handleRequest()
+handleBotRequest()
+handleBrowserRequest()
+renderToPipeableStream()
+RemixServer
+Responsibilities
+Parse the incoming request.
+Apply route-specific security headers.
+Detect locale.
+Detect operating system.
+Detect bot vs browser.
+Dispatch to the appropriate rendering strategy.
+Stream HTML back to the client.
+Handle rendering errors.
+Key Architectural Decisions
+Dispatcher Pattern (handleRequest).
+Single Source of Truth (compute locale/platform once).
+Streaming SSR.
+Separate rendering strategies for bots and browsers.
+Timeout protection with abort.
+Different error handling before and after streaming starts.
 Mental Model
 
-Imagine an airport security checkpoint.
+Think of entry.server.tsx as the airport control tower.
 
-Every passenger passes through the same entrance.
+Every request lands here first.
 
-The checkpoint asks:
+The tower:
 
-Which flight?
-Passport?
-Special handling?
-Domestic or international?
-
-Then it sends the passenger to the correct gate.
-
-handleRequest() does the same thing for HTTP requests.
+checks who is arriving,
+gathers important information,
+decides which runway to use (bot or browser),
+then safely guides the response back to the client.
