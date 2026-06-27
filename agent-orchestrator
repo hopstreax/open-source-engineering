@@ -1,0 +1,77 @@
+agent-orchestrator                                  
+
+complete frontend mental model  
+
+User
+
+↓
+
+npm run dev
+
+↓
+
+Electron Forge
+
+↓
+
+Electron Main Process
+(frontend/src/main.ts)
+
+↓
+
+BrowserWindow
+
+↓
+
+React Renderer
+(renderer/main.tsx)
+
+↓
+
+createAppRouter()
+
+↓
+
+TanStack Router
+
+↓
+
+Generated Route Tree
+
+↓
+
+__root.tsx
+(Global Route)
+
+↓
+
+Outlet
+
+↓
+
+_shell.tsx
+(Application Layout)
+
+↓
+
+Feature Route
+
+↓
+
+React Components
+
+↓
+
+TanStack Query
+
+↓
+
+HTTP Client
+
+↓
+
+Go Daemon
+
+↓
+
+SQLite / Runtime
