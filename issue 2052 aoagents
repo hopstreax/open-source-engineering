@@ -1,0 +1,327 @@
+This is exactly the kind of note you should keep. Since your goal is to become good at reading production code, your notes should capture **what you learned**, not just **what you changed**.
+
+---
+
+# Agent Orchestrator Notes - Issue #2052
+
+## Issue
+
+**#2052 - Replace native browser `window.confirm()` / `window.alert()` with in-app UI**
+
+---
+
+## Goal
+
+When removing a project from the sidebar, the application used the browser's native confirmation dialog (`window.confirm()`). This looked inconsistent with the rest of the Electron application.
+
+Goal:
+
+* Replace native confirmation with an in-app dialog.
+* Keep the project removal logic unchanged.
+* Update tests accordingly.
+
+---
+
+# Investigation Process
+
+### 1. Reproduced the issue
+
+* Started the application.
+* Added a project.
+* Clicked:
+
+  ```
+  Sidebar
+      ↓
+  Project
+      ↓
+  Three-dot menu
+      ↓
+  Remove Project
+  ```
+* Observed native browser confirmation dialog.
+
+---
+
+### 2. Traced the execution flow
+
+Followed the UI until finding the responsible component.
+
+```
+Sidebar
+    ↓
+ProjectItem()
+    ↓
+DropdownMenuItem
+    ↓
+Remove Project
+    ↓
+removeProject()
+```
+
+Found inside:
+
+```
+frontend/src/renderer/components/Sidebar.tsx
+```
+
+Specifically:
+
+```
+ProjectItem()
+```
+
+---
+
+### 3. Understood ProjectItem()
+
+Responsibilities:
+
+* Render one project in sidebar
+* Expand/collapse sessions
+* Spawn orchestrator
+* Navigate to dashboard
+* Navigate to settings
+* Remove project
+
+ProjectItem is the owner of all project actions.
+
+---
+
+### 4. Existing implementation
+
+Originally:
+
+```ts
+const confirmed = window.confirm(...);
+
+if (!confirmed) return;
+
+await onRemoveProject(...);
+```
+
+On failure:
+
+```ts
+window.alert(...)
+```
+
+---
+
+### 5. Investigated existing dialog components
+
+Initially searched for reusable dialog.
+
+Found:
+
+```
+components/primitives/Alert.tsx
+```
+
+Later realized this belonged to **Trigger.dev**, not Agent Orchestrator.
+
+Actual project already uses:
+
+```
+@radix-ui/react-dialog
+```
+
+Example:
+
+```
+CreateProjectAgentSheet.tsx
+```
+
+This became the reference implementation.
+
+---
+
+### 6. Implemented new dialog
+
+Added state:
+
+```ts
+const [removeDialogOpen, setRemoveDialogOpen] = useState(false);
+```
+
+Instead of:
+
+```
+window.confirm()
+```
+
+Flow became:
+
+```
+Remove Project
+        ↓
+Open Dialog
+        ↓
+Cancel
+or
+Remove
+```
+
+When Remove is clicked:
+
+```
+removeProject()
+```
+
+executes exactly as before.
+
+Business logic remained unchanged.
+
+Only confirmation UI changed.
+
+---
+
+### 7. removeProject()
+
+Removed:
+
+```ts
+window.confirm()
+```
+
+Function now only performs removal.
+
+Responsibilities became cleaner:
+
+```
+Dialog
+    ↓
+User confirms
+    ↓
+removeProject()
+        ↓
+Remove workspace
+```
+
+---
+
+### 8. Tests
+
+Updated Sidebar tests.
+
+Removed tests for:
+
+```
+window.confirm()
+```
+
+Added test for:
+
+```
+Dialog opens
+```
+
+Verified:
+
+* dialog opens
+* Cancel closes dialog
+* Remove calls removeProject()
+
+---
+
+### 9. Debugging learned
+
+Encountered multiple production debugging situations:
+
+* Wrong import path
+* Duplicate imports
+* Undefined component
+* Incorrect Radix import
+* Wrong Button variant
+* State update mistakes
+* Test failures
+* Missing testing dependency (`@testing-library/dom`)
+* Cleaning unrelated git changes
+* Understanding generated files (`routeTree.gen.ts`)
+
+---
+
+### 10. Open Source lesson learned
+
+Before starting any issue:
+
+Always check:
+
+* existing PR
+* linked PR
+* assignee
+* review comments
+* merge conflicts
+
+Issue #2052 already had an open PR.
+
+Although inactive due to merge conflicts, opening another competing PR was not the best strategy.
+
+Decided to:
+
+* keep implementation locally
+* push feature branch
+* move to another issue with better merge opportunity
+
+---
+
+# Files modified
+
+```
+Sidebar.tsx
+Sidebar.test.tsx
+package.json
+package-lock.json
+```
+
+---
+
+# Biggest architectural takeaway
+
+Instead of mixing UI and business logic:
+
+```
+Old
+
+removeProject()
+    ↓
+window.confirm()
+    ↓
+remove
+```
+
+Now:
+
+```
+Dropdown
+     ↓
+Open Dialog
+     ↓
+User confirms
+     ↓
+removeProject()
+     ↓
+Business logic
+```
+
+**UI decides whether the action should happen.**
+
+**Business logic only performs the action.**
+
+---
+
+# Personal learning
+
+This was my first end-to-end production issue where I:
+
+* Reproduced a bug.
+* Traced the execution flow.
+* Understood component ownership.
+* Read production React/TypeScript code.
+* Implemented a UI change.
+* Updated tests.
+* Debugged multiple errors.
+* Cleaned the Git diff.
+* Evaluated whether opening a PR was strategically worthwhile.
+
+**Overall outcome:** Even though I chose not to open a competing PR because an existing one is awaiting conflict resolution, this issue was a complete practice run through a real open-source contribution workflow and significantly improved my understanding of production code and contribution strategy.
