@@ -421,380 +421,154 @@ This was my first end-to-end production issue where I:
 
 
 
-# Agent Orchestrator — Issue #2271 Investigation Notes
+# Issue #2271 -- Publish Nightly Feed Metadata During Stable Releases
 
-## Issue
+## Background
 
-Nightly users should automatically receive the newest available release, whether it is:
+The desktop application supports two update channels:
 
-- a Nightly release
-- or a Stable release
+-   **latest** (stable releases)
+-   **nightly** (nightly releases)
 
-Currently this does not always happen.
+The updater downloads metadata files (`*.yml`) to determine whether
+updates are available.
 
----
+------------------------------------------------------------------------
 
-# Goal
+## The Problem
 
-Understand the complete update pipeline before writing any code.
+During a **stable release**, the GitHub workflow only generated metadata
+for the **latest** channel.
 
-The objective is to understand:
+Example:
 
-- how Electron checks for updates
-- how GitHub releases are published
-- how update metadata is generated
-- where the bug actually originates
-- which component owns the fix
+``` bash
+node scripts/feed.mjs dist "${tag#v}" latest
+```
 
----
+This produced files such as:
 
-# High Level Architecture
+-   `latest.yml`
+-   `latest-linux.yml`
 
-Developer creates release
-        ↓
-GitHub Workflow
-        ↓
-feed.mjs
-        ↓
-Generate update metadata (.yml)
-        ↓
-Upload Release Assets
-        ↓
-GitHub Releases
-        ↓
-Electron Auto Updater
-        ↓
-Desktop Application
+However, **no `nightly*.yml` files were generated**.
 
----
+### Why is this a problem?
 
-# Files Investigated
+A desktop client configured to use the **nightly** channel still checks
+for `nightly*.yml`.
 
-## 1. frontend/src/main/auto-updater.ts
+If there is **no newer nightly build**, the client falls back to the
+newest stable release.
 
-### Responsibility
+Because the stable release did **not** publish `nightly*.yml`, the
+request failed with missing metadata.
 
-Initializes Electron Auto Updater.
+As a result:
 
-Does NOT generate releases.
+-   Stable users were unaffected.
+-   Nightly users could fail to update to the latest stable release when
+    no newer nightly build existed.
 
-Does NOT generate metadata.
+------------------------------------------------------------------------
 
-Its responsibility is only to:
+## Root Cause
 
-- Read update settings
-- Configure electron-updater
-- Configure update channel
-- Start update check
+The GitHub Actions workflow generated metadata for only one update
+channel:
 
-### Execution Flow
+``` bash
+node scripts/feed.mjs dist "${tag#v}" latest
+```
 
-readUpdateSettings()
-        ↓
-setFeedURL()
-        ↓
-autoUpdater.channel = settings.channel
-        ↓
-allowDowngrade = true
-        ↓
-autoUpdater.checkForUpdates()
+and uploaded only:
 
-### Observations
+``` bash
+dist/latest*.yml
+dist/*.blockmap
+```
 
-Uses GitHub provider.
+The workflow never generated or uploaded metadata for the nightly
+channel.
 
-The update channel comes from:
+------------------------------------------------------------------------
 
-settings.channel
+## Solution
 
-Possible values:
+Generate metadata for **both** channels during stable releases.
 
-- latest
-- nightly
+### Before
 
-This file is the consumer of update metadata.
+``` bash
+node scripts/feed.mjs dist "${tag#v}" latest
 
----
+assets=(
+  dist/latest*.yml
+  dist/*.blockmap
+)
+```
 
-## 2. frontend/scripts/feed.mjs
+### After
 
-### Responsibility
+``` bash
+node scripts/feed.mjs dist "${tag#v}" latest
+node scripts/feed.mjs dist "${tag#v}" nightly
 
-Generates Electron update metadata.
+assets=(
+  dist/latest*.yml
+  dist/nightly*.yml
+  dist/*.blockmap
+)
+```
 
-This script runs during release generation.
+------------------------------------------------------------------------
 
-It does NOT know anything about users.
+## Why This Works
 
-It simply generates metadata for the channel it is given.
+A stable release now publishes metadata for both channels.
 
-### Main Functions
+-   **Stable clients** continue reading `latest*.yml`.
+-   **Nightly clients** can read `nightly*.yml` even when no newer
+    nightly build exists.
+-   No application code changes are required.
+-   Only the release workflow changes.
 
-selectInstallers()
+------------------------------------------------------------------------
 
-Finds versioned installers.
+## Files Modified
 
----
+    .github/workflows/frontend-release.yml
 
-feedFilename()
+No runtime code was modified.
 
-Creates filenames such as
+------------------------------------------------------------------------
 
-latest.yml
-latest-mac.yml
-latest-linux.yml
+## What I Learned
 
-or
+### Technical
 
-nightly.yml
-nightly-mac.yml
-nightly-linux.yml
+-   How Electron update channels (`latest` vs `nightly`) work.
+-   How release metadata (`*.yml`) controls desktop updates.
+-   How GitHub Actions workflows publish release assets.
+-   Why release pipelines can be fixed without touching application
+    code.
 
-depending on the channel.
+### Open Source
 
----
+-   Read the issue before touching code.
+-   Trace the execution flow to find the real source of the bug.
+-   Keep fixes minimal and focused.
+-   Verify the diff contains only intentional changes before opening a
+    PR.
+-   Be prepared to iterate based on maintainer feedback.
 
-buildYml()
+------------------------------------------------------------------------
 
-Builds Electron updater metadata.
+## PR Summary
 
----
+**Issue:** Nightly clients could miss stable updates because stable
+releases did not publish `nightly*.yml` metadata.
 
-generateFeeds()
-
-Main function.
-
-Creates metadata for:
-
-- Windows
-- Linux
-- macOS
-
-Writes metadata into release directory.
-
----
-
-CLI
-
-node scripts/feed.mjs <dir> <version> <channel>
-
-Channel is supplied externally.
-
-feed.mjs does NOT decide which channel to use.
-
----
-
-# Important Design Principle Learned
-
-Producer
-
-feed.mjs
-
-↓
-
-Generates metadata
-
-Consumer
-
-auto-updater.ts
-
-↓
-
-Reads metadata
-
-The two files never communicate directly.
-
-They communicate through the generated .yml files.
-
-This is an example of communication through a contract rather than function calls.
-
----
-
-# Current Bug
-
-Nightly client
-
-↓
-
-Requests nightly feed
-
-↓
-
-Newest available release happens to be Stable
-
-↓
-
-Updater selects Stable release
-
-↓
-
-Still requests nightly-mac.yml
-
-↓
-
-Stable release only contains latest-mac.yml
-
-↓
-
-404
-
-↓
-
-Update fails
-
----
-
-# Expected Behaviour
-
-Nightly users should always receive the newest build.
-
-Possible sources:
-
-- Latest Nightly
-- Latest Stable
-
-whichever has the highest version.
-
-The updater should never request a metadata file that does not exist.
-
----
-
-# Concepts Learned
-
-## Electron Auto Updater
-
-Responsible for:
-
-- Checking updates
-- Downloading updates
-- Installing updates
-
-Not responsible for generating releases.
-
----
-
-## Update Feed
-
-A feed is metadata describing:
-
-- latest version
-- downloadable files
-- hashes
-- release date
-
-It is NOT the release itself.
-
----
-
-## GitHub Workflow
-
-Expected responsibility:
-
-- Build application
-- Publish release
-- Execute feed.mjs
-- Upload generated metadata
-
-(Investigation pending)
-
----
-
-# Architecture Diagram
-
-GitHub Workflow
-        │
-        ▼
-feed.mjs
-        │
-        ▼
-Generate latest.yml / nightly.yml
-        │
-        ▼
-GitHub Releases
-        │
-        ▼
-electron-updater
-        │
-        ▼
-auto-updater.ts
-        │
-        ▼
-Desktop Application
-
----
-
-# Investigation Status
-
-✅ Issue selected
-
-✅ Current repository verified
-
-✅ auto-updater.ts investigated
-
-✅ feed.mjs investigated
-
-⬜ frontend-release.yml investigation
-
-⬜ Complete execution flow
-
-⬜ Root cause confirmation
-
-⬜ Decide implementation
-
-⬜ Comment on issue
-
-⬜ Implement
-
-⬜ Tests
-
-⬜ PR review
-
----
-
-# Biggest Lessons So Far
-
-1.
-
-Every file has a single responsibility.
-
----
-
-2.
-
-Large systems communicate through contracts.
-
-Examples:
-
-Frontend ↔ Backend
-HTTP API
-
-Backend ↔ Database
-SQL
-
-Electron ↔ GitHub Releases
-Update metadata (.yml)
-
----
-
-3.
-
-Never trust issue file paths.
-
-Always verify against the current repository.
-
----
-
-4.
-
-Investigate first.
-
-Implementation comes after understanding.
-
----
-
-# Questions Still Open
-
-- Where does "latest" vs "nightly" originate?
-- How does frontend-release.yml invoke feed.mjs?
-- Which component actually owns the fix?
-- Can this be solved in one file or multiple files?
+**Fix:** Generate and upload both `latest` and `nightly` feed metadata
+during stable releases so both update channels always have the required
+metadata files.
