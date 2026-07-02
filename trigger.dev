@@ -1,2 +1,593 @@
 #understood basic architecture of trigger.dev and now
   i will start finding issues with trigger.dev
+
+
+
+
+Absolutely. I think this is worth documenting because this investigation taught several production engineering lessons beyond just solving the issue. I've written it in a style that you can keep in your GitHub notes or Obsidian/iPad.
+
+---
+
+# Trigger.dev Investigation Notes
+
+## Repository
+
+**Trigger.dev**
+
+## Issue
+
+**#2494 — Make the default run list filters more explicit**
+
+---
+
+# Problem Statement
+
+The `/runs` API endpoint applies a **default time filter of the last 7 days** when no time filter is provided.
+
+This behavior is currently:
+
+* undocumented in the API docs
+* undocumented in the SDK (`runs.list()`)
+* confusing for users because an empty response may simply mean older runs are being filtered out
+
+Example:
+
+```ts
+await runs.list();
+```
+
+Internally behaves like:
+
+```ts
+await runs.list({
+    period: "7d"
+});
+```
+
+without the client knowing.
+
+---
+
+# Maintainer's Suggested Solutions
+
+The original issue proposed three possible improvements:
+
+1. Document the behavior.
+2. Return the applied filters as metadata in the API response.
+3. Improve the dashboard by hinting that the default filter may be hiding runs.
+
+---
+
+# Investigation Goal
+
+Determine:
+
+* where the default 7-day filter is applied
+* which subsystem owns this behavior
+* where the API response is constructed
+* the smallest production-quality solution
+
+---
+
+# Investigation Process
+
+Instead of searching randomly, the investigation followed execution flow.
+
+---
+
+## Step 1 — Initial Hypothesis
+
+Initial assumption:
+
+```text
+SDK
+    ↓
+GET /runs
+    ↓
+Backend Route
+    ↓
+Apply default 7 days
+    ↓
+Database
+```
+
+This was only a hypothesis.
+
+---
+
+## Step 2 — Route Investigation
+
+Found:
+
+```
+apps/webapp/app/routes/api.v1.runs.ts
+```
+
+Observation:
+
+The route **does not implement filtering**.
+
+Instead it:
+
+* validates request
+* authenticates
+* authorizes
+* delegates work
+
+It calls:
+
+```ts
+ApiRunListPresenter.call(...)
+```
+
+Conclusion:
+
+> The route is **not** the owner of the default filter.
+
+---
+
+## Step 3 — ApiRunListPresenter Investigation
+
+Observation:
+
+`ApiRunListPresenter`:
+
+* parses search params
+* converts API request into `RunListOptions`
+* delegates again
+
+Calls:
+
+```ts
+NextRunListPresenter.call(...)
+```
+
+No default time logic found.
+
+Conclusion:
+
+> ApiRunListPresenter is an orchestration layer, not the owner.
+
+---
+
+## Step 4 — NextRunListPresenter Investigation
+
+Important discovery:
+
+```ts
+const time = timeFilters({
+    period,
+    from,
+    to,
+});
+```
+
+Comment above the code:
+
+```ts
+// get the time values from the raw values
+// (including a default period)
+```
+
+This became the strongest lead.
+
+---
+
+## Step 5 — timeFilters Investigation
+
+Located in:
+
+```
+components/runs/v3/SharedFilters.ts
+```
+
+Found:
+
+```ts
+const DEFAULT_PERIOD = "7d";
+```
+
+Behavior:
+
+```ts
+if (!period && !from && !to) {
+    return {
+        period: defaultPeriod,
+        isDefault: true,
+        ...
+    };
+}
+```
+
+Conclusion:
+
+> The implicit 7-day filter originates in `timeFilters()`.
+
+---
+
+# Execution Flow
+
+Final execution flow:
+
+```text
+SDK
+    │
+    ▼
+GET /api/v1/runs
+    │
+    ▼
+api.v1.runs.ts
+    │
+    ▼
+ApiRunListPresenter
+    │
+    ▼
+NextRunListPresenter
+    │
+    ▼
+timeFilters()
+    │
+    ▼
+RunsRepository
+    │
+    ▼
+Database
+```
+
+---
+
+# Internal Data Flow
+
+`timeFilters()` returns:
+
+```ts
+{
+    period,
+    from,
+    to,
+    isDefault,
+    rangeType,
+    label,
+    valueLabel
+}
+```
+
+However...
+
+`NextRunListPresenter` only returns:
+
+```ts
+filters: {
+    tasks,
+    versions,
+    statuses,
+    from,
+    to,
+}
+```
+
+Lost information:
+
+* period
+* isDefault
+* rangeType
+* label
+* valueLabel
+
+Therefore:
+
+> The API layer can no longer determine whether the time filter was implicit.
+
+---
+
+# API Contract Investigation
+
+Located:
+
+```
+packages/core/v3
+```
+
+Found:
+
+```ts
+ListRunResponse
+```
+
+Current response:
+
+```ts
+{
+    data,
+    pagination
+}
+```
+
+No metadata.
+
+No filters.
+
+No appliedFilters.
+
+---
+
+# Final API Mapping
+
+Located inside:
+
+```
+ApiRunListPresenter
+```
+
+Current implementation:
+
+```ts
+return {
+    data,
+    pagination,
+};
+```
+
+Observation:
+
+The API currently discards all filter information.
+
+---
+
+# Additional Investigation
+
+Studied:
+
+```
+ErrorsListPresenter
+BatchListPresenter
+```
+
+Observation:
+
+Both presenters internally expose richer filter information.
+
+Example:
+
+```ts
+filters: {
+    tasks,
+    versions,
+    statuses,
+    search,
+    period,
+    from,
+    to,
+    ...
+}
+```
+
+This indicates that Trigger.dev already follows a pattern of returning filter state internally.
+
+---
+
+# Maintainer Feedback
+
+New maintainer comment:
+
+> Returning all of the filters in the response, including the implicit time period makes sense.
+
+This changes the implementation strategy.
+
+Instead of inventing:
+
+```ts
+appliedFilters
+```
+
+The repository owner prefers:
+
+> Return all filters.
+
+---
+
+# Current Understanding
+
+The problem is **not**:
+
+> Applying the default filter.
+
+The default filter exists for performance reasons.
+
+The real problem is:
+
+> Clients cannot discover which filters the backend actually applied.
+
+---
+
+# Expected Change
+
+Likely files:
+
+```
+ListRunResponse
+```
+
+↓
+
+Add filters to API schema.
+
+---
+
+```
+NextRunListPresenter
+```
+
+↓
+
+Preserve implicit period information.
+
+---
+
+```
+ApiRunListPresenter
+```
+
+↓
+
+Expose filters in API response.
+
+---
+
+Tests
+
+↓
+
+Update response contract.
+
+---
+
+# Engineering Lessons Learned
+
+## 1. Never search randomly
+
+Follow execution flow.
+
+```
+Route
+
+↓
+
+Presenter
+
+↓
+
+Service
+
+↓
+
+Repository
+```
+
+---
+
+## 2. Separate ownership
+
+Transport layer
+
+↓
+
+Business layer
+
+↓
+
+Persistence layer
+
+---
+
+## 3. Distinguish orchestration from implementation
+
+`ApiRunListPresenter`
+
+↓
+
+Coordinates
+
+`NextRunListPresenter`
+
+↓
+
+Builds query context
+
+`RunsRepository`
+
+↓
+
+Executes query
+
+---
+
+## 4. API contracts matter
+
+Before changing implementation:
+
+Understand
+
+```
+Public Contract
+
+↓
+
+Internal Models
+
+↓
+
+Business Logic
+```
+
+Never change implementation before understanding the API contract.
+
+---
+
+## 5. Design before implementation
+
+Instead of asking:
+
+> Which file should I edit?
+
+Ask:
+
+> Which layer owns this behavior?
+
+---
+
+## 6. Production Engineering Workflow
+
+```
+Understand issue
+
+↓
+
+Find subsystem ownership
+
+↓
+
+Trace execution flow
+
+↓
+
+Eliminate hypotheses
+
+↓
+
+Identify true owner
+
+↓
+
+Study API contract
+
+↓
+
+Design change
+
+↓
+
+Implement
+
+↓
+
+Test
+
+↓
+
+PR Review
+```
+
+---
+
+# Current Status
+
+✅ Root cause understood.
+
+✅ Architecture mapped.
+
+✅ API contract investigated.
+
+✅ Maintainer guidance received.
+
+⏳ **Next step:** Design the public `filters` response shape, update the response schema, implement the mapping, and add tests.
